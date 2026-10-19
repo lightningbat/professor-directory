@@ -32,9 +32,6 @@ export function professorRoutes(ctx: AppContext): Router {
   router.get('/professors', auth.optional, (req, res) => {
     const query = listQuery.parse(req.query);
     const result = repo.search(query);
-	console.log("query: ", query)
-	console.log("result: ", result)
-	// console.log("listQuery: ", listQuery)
     const loggedIn = Boolean(req.auth);
 
     res.vary('Cookie');

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import App from './App.jsx';
+import { useHeartbeat } from './hooks/useHeartbeat.js';
 import AboutPage from './pages/AboutPage.jsx';
 import ContactPage from './pages/ContactPage.jsx';
 import './pages/pages.css';
@@ -23,6 +24,8 @@ function ScrollManager() {
 }
 
 export default function Root() {
+  useHeartbeat();
+
   return (
     <>
       <ScrollManager />

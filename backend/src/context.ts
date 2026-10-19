@@ -1,3 +1,5 @@
+import { AnalyticsStore } from './analytics/store.js';
+import { FixedWindowThrottle } from './analytics/throttle.js';
 import { createAuthMiddleware } from './auth/middleware.js';
 import { createGoogleAuth, type GoogleAuth } from './auth/google.js';
 import { SessionStore } from './auth/sessions.js';
@@ -9,28 +11,30 @@ import { RevealLimiter } from './reveal/limiter.js';
 import { ProfessorRepository } from './repository.js';
 
 export interface Overrides {
-	google?: GoogleAuth | null;
-	reuseGraceMs?: number;
+  google?: GoogleAuth | null;
+  reuseGraceMs?: number;
 }
 
 /** Builds every service once so the server and the tests wire things the same way. */
 export function createContext(db: Db, config: Config, overrides: Overrides = {}) {
-	const tokens = new TokenService(config.auth.accessSecret, config.auth.accessTtlSeconds);
-	return {
-		config,
-		repo: new ProfessorRepository(db),
-		users: new UserStore(db),
-		sessions: new SessionStore(db, config.auth.refreshTtlDays * 86_400_000, overrides.reuseGraceMs),
-		tokens,
-		auth: createAuthMiddleware(tokens),
-		limiter: new RevealLimiter(db),
-		google:
-			overrides.google !== undefined
-				? overrides.google
-				: config.auth.google
-					? createGoogleAuth(config.auth.google)
-					: null,
-	};
+  const tokens = new TokenService(config.auth.accessSecret, config.auth.accessTtlSeconds);
+  return {
+    config,
+    repo: new ProfessorRepository(db),
+    users: new UserStore(db),
+    sessions: new SessionStore(db, config.auth.refreshTtlDays * 86_400_000, overrides.reuseGraceMs),
+    tokens,
+    auth: createAuthMiddleware(tokens),
+    limiter: new RevealLimiter(db),
+    analytics: new AnalyticsStore(db, config.analytics.timezone),
+    heartbeatThrottle: new FixedWindowThrottle(120, 60_000), // per IP, per minute
+    google:
+      overrides.google !== undefined
+        ? overrides.google
+        : config.auth.google
+          ? createGoogleAuth(config.auth.google)
+          : null,
+  };
 }
 
 export type AppContext = ReturnType<typeof createContext>;

@@ -37,7 +37,7 @@ function refreshSession() {
   return refreshing;
 }
 
-async function request(path, { params, method = 'GET', signal, retry = true } = {}) {
+async function request(path, { params, method = 'GET', body: payload, signal, retry = true } = {}) {
   const url = new URL(`${BASE_URL}${path}`, window.location.origin);
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value !== '' && value != null) url.searchParams.set(key, value);
@@ -47,12 +47,13 @@ async function request(path, { params, method = 'GET', signal, retry = true } = 
     method,
     signal,
     credentials: 'include',
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
+    body: payload ? JSON.stringify(payload) : undefined,
   });
 
   if (res.status === 401 && retry) {
     await refreshSession(); // if it fails the server clears the cookies and the retry is anonymous
-    return request(path, { params, method, signal, retry: false });
+    return request(path, { params, method, body: payload, signal, retry: false });
   }
 
   const body = res.status === 204 ? null : await res.json().catch(() => null);
@@ -72,6 +73,9 @@ export async function getMe({ signal } = {}) {
     throw err;
   }
 }
+
+/** "I'm still here" ping used by the admin dashboard's live visitor count. */
+export const sendHeartbeat = (payload) => request('/analytics/heartbeat', { method: 'POST', body: payload });
 
 export const logout = () => request('/auth/logout', { method: 'POST' });
 

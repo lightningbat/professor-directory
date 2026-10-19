@@ -1,6 +1,15 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -24,6 +33,14 @@ const schema = z
     COOKIE_DOMAIN: z.string().optional(),
 
     TRUST_PROXY: z.string().default('false'),
+
+    // Admin dashboard: comma-separated Google emails allowed into /api/admin, and where the
+    // dashboard is served from (CORS + post-login redirect).
+    ADMIN_EMAILS: z.string().default(''),
+    ADMIN_URL: z.string().url().default('http://localhost:5174'),
+    // "Today" in the dashboard follows this timezone, e.g. Asia/Kolkata or America/New_York.
+    ANALYTICS_TIMEZONE: z.string().default('UTC').refine(isValidTimeZone, 'must be a valid IANA timezone'),
+    ANALYTICS_RETENTION_DAYS: z.coerce.number().int().min(7).max(730).default(90),
   })
   .refine((e) => e.COOKIE_SAMESITE !== 'none' || e.COOKIE_SECURE !== 'false', {
     path: ['COOKIE_SAMESITE'],
@@ -47,8 +64,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
   const e = parsed.data;
   const frontendUrl = e.FRONTEND_URL.replace(/\/$/, '');
+  const adminUrl = e.ADMIN_URL.replace(/\/$/, '');
   const corsOrigins = [
-    ...new Set([...e.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean), new URL(frontendUrl).origin]),
+    ...new Set([
+      ...e.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean),
+      new URL(frontendUrl).origin,
+      new URL(adminUrl).origin,
+    ]),
   ];
 
   return {
@@ -57,6 +79,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     databasePath: e.DATABASE_PATH,
     corsOrigins,
     frontendUrl,
+    adminUrl,
+    adminEmails: new Set(e.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)),
+    analytics: { timezone: e.ANALYTICS_TIMEZONE, retentionDays: e.ANALYTICS_RETENTION_DAYS },
     autoSeed: e.AUTO_SEED ? e.AUTO_SEED === 'true' : e.NODE_ENV !== 'production',
     seedCount: e.SEED_COUNT,
     trustProxy: parseTrustProxy(e.TRUST_PROXY),

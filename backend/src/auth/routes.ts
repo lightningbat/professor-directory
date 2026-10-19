@@ -21,16 +21,40 @@ interface Deps {
   auth: ReturnType<typeof createAuthMiddleware>;
 }
 
-// Only same-site relative paths: blocks open redirects like //evil.com or https://evil.com.
-const safeReturnTo = (value: unknown): string =>
-  typeof value === 'string' && /^\/(?!\/)[^\s\\]{0,200}$/.test(value) ? value : '/';
-
 export function authRoutes({ config, google, users, sessions, tokens, auth }: Deps): Router {
   const router = Router();
   const csrf = trustedOrigin(config.corsOrigins);
 
+  // Relative paths, or absolute URLs on one of our own origins (public site, admin dashboard).
+  // Anything else falls back to "/" so this can't be used as an open redirect.
+  const safeReturnTo = (value: unknown): string => {
+    if (typeof value !== 'string' || value.length > 300) return '/';
+    if (/^\/(?!\/)[^\s\\]{0,200}$/.test(value)) return value;
+    try {
+      const url = new URL(value);
+      if (/^https?:$/.test(url.protocol) && config.corsOrigins.includes(url.origin)) return url.toString();
+    } catch {
+      /* not a URL */
+    }
+    return '/';
+  };
+
+  // The destination also travels inside `state` (which Google hands back untouched), so even when
+  // the login cookie is missing we can send an error back to the site the login started from.
+  // It is re-checked against the allow-list, so a forged state can't redirect anywhere else.
+  const returnToFromState = (state: unknown): string => {
+    if (typeof state !== 'string') return '/';
+    const dot = state.indexOf('.');
+    if (dot < 0) return '/';
+    try {
+      return safeReturnTo(Buffer.from(state.slice(dot + 1), 'base64url').toString('utf8'));
+    } catch {
+      return '/';
+    }
+  };
+
   const backToSite = (res: Response, path: string, error?: string) => {
-    const url = new URL(config.frontendUrl + path);
+    const url = new URL(path, `${config.frontendUrl}/`);
     if (error) url.searchParams.set('auth_error', error);
     res.redirect(url.toString());
   };
@@ -39,9 +63,18 @@ export function authRoutes({ config, google, users, sessions, tokens, auth }: De
   router.get('/auth/google', asyncHandler(async (req, res) => {
     if (!google) throw new HttpError(503, 'oauth_not_configured', 'Google login is not configured on this server');
 
-    const state = randomBytes(16).toString('hex');
+    const requested = req.query.returnTo;
+    const returnTo = safeReturnTo(requested);
+    if (typeof requested === 'string' && requested !== '/' && returnTo === '/') {
+      console.warn(
+        `Login returnTo "${requested}" was rejected: its origin isn't in FRONTEND_URL, ADMIN_URL or CORS_ORIGIN. ` +
+          `The user will be sent to ${config.frontendUrl}/ instead.`,
+      );
+    }
+
+    const state = `${randomBytes(16).toString('hex')}.${Buffer.from(returnTo).toString('base64url')}`;
     const { url, codeVerifier } = await google.start(state);
-    const tx = await tokens.signOAuthTx({ state, codeVerifier, returnTo: safeReturnTo(req.query.returnTo) });
+    const tx = await tokens.signOAuthTx({ state, codeVerifier, returnTo });
 
     setOAuthTxCookie(res, config, tx, OAUTH_TX_MAX_AGE_MS);
     res.redirect(url);
@@ -55,11 +88,19 @@ export function authRoutes({ config, google, users, sessions, tokens, auth }: De
     const tx = typeof rawTx === 'string' ? await tokens.verifyOAuthTx(rawTx) : null;
     clearOAuthTxCookie(res, config);
 
-    if (typeof req.query.error === 'string') return backToSite(res, '/', 'access_denied');
+    const dest = tx?.returnTo ?? returnToFromState(req.query.state);
+
+    if (typeof req.query.error === 'string') return backToSite(res, dest, 'access_denied');
     if (!tx || typeof req.query.state !== 'string' || req.query.state !== tx.state) {
-      return backToSite(res, '/', 'invalid_state');
+      console.warn(
+        tx
+          ? 'Google callback: state did not match the login cookie'
+          : 'Google callback: login cookie (oauth_tx) missing. If the login started on a different host than this ' +
+            'callback, set COOKIE_DOMAIN to the shared parent domain (e.g. .mydomain.com).',
+      );
+      return backToSite(res, dest, 'invalid_state');
     }
-    if (typeof req.query.code !== 'string') return backToSite(res, '/', 'invalid_request');
+    if (typeof req.query.code !== 'string') return backToSite(res, dest, 'invalid_request');
 
     let profile;
     try {
