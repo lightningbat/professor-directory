@@ -74,6 +74,7 @@ code, .mono { font-family: var(--mono); font-size: 0.85em; }
 .gate-card h1 { font-family: var(--font-display); font-size: 1.7rem; letter-spacing: -0.03em; }
 .gate-card p { line-height: 1.55; }
 .gate-card .btn { margin-top: 6px; }
+.gate-error { padding: 10px 12px; border-radius: 10px; background: rgba(239, 107, 87, 0.12); color: #f59a8a; font-size: 14px; }
 .gate-card code { padding: 2px 6px; border-radius: 6px; background: var(--panel-2); }
 .brand-mark { width: 30px; height: 30px; border-radius: 9px; background: var(--user); box-shadow: 0 0 0 5px rgba(55, 197, 165, 0.15); }
 
@@ -226,3 +227,21 @@ td code { padding: 2px 7px; border-radius: 6px; background: var(--panel-2); }
   .live-dot::after { animation: none; }
   .split-user, .split-guest, .bars-track span { transition: none; }
 }
+
+/* ---------- Human check (Cloudflare Turnstile): invisible unless Cloudflare needs a click ---------- */
+.human-check {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 20px 40px -18px rgba(0, 0, 0, 0.6);
+}
+.human-check[data-interactive='true'] { display: flex; }
+.human-check span { font-size: 14px; font-weight: 500; }

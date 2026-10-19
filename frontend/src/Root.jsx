@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import App from './App.jsx';
+import HumanCheck from './components/HumanCheck.jsx';
 import { useHeartbeat } from './hooks/useHeartbeat.js';
 import AboutPage from './pages/AboutPage.jsx';
 import ContactPage from './pages/ContactPage.jsx';
@@ -29,6 +30,7 @@ export default function Root() {
   return (
     <>
       <ScrollManager />
+      <HumanCheck />
       <Routes>
         <Route path="/" element={<App />} />
         <Route path="/about" element={<AboutPage />} />

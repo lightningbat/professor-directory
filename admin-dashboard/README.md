@@ -17,6 +17,11 @@ ANALYTICS_TIMEZONE=UTC            # what "today" means, e.g. Asia/Kolkata
 Then open the dashboard and click "Continue with Google". Anyone else gets "No admin access".
 The dashboard only reads `/api/admin/*` on the same server as the public site.
 
+## Sign-in
+Google login, then Cloudflare Turnstile runs in the background (usually invisible) and is traded for a short-lived
+access token that the admin API requires. It renews itself before it expires. Set `VITE_TURNSTILE_SITE_KEY`
+(and add the admin hostname to the Turnstile widget in Cloudflare).
+
 ## How "online now" works
 The public site sends a small heartbeat every ~25 s while a tab is visible (random browser id + tab id +
 page path, no personal data). A browser counts as online if its last heartbeat was within 75 s, so closing

@@ -28,7 +28,8 @@ export function professorRoutes(ctx: AppContext): Router {
   const router = Router();
 
   // GET /api/professors?q=&college=&department=&designation=&page=1&pageSize=10
-  // Same rows for everyone, except the profile link and per-user caching.
+  // Public: guests browse and search with no verification. Only people holding an access token
+  // (logged in + passed Turnstile) get the direct profile link; everyone else gets a Google search link.
   router.get('/professors', auth.optional, (req, res) => {
     const query = listQuery.parse(req.query);
     const result = repo.search(query);
@@ -40,7 +41,7 @@ export function professorRoutes(ctx: AppContext): Router {
   });
 
   // POST /api/professors/:id/email
-  // Order matters: origin check -> verify cookie -> make sure it exists -> count against limits -> reveal.
+  // Order matters: origin check -> verify the access token -> make sure it exists -> count against limits -> reveal.
   router.post('/professors/:id/email', trustedOrigin(config.corsOrigins), auth.required, (req, res) => {
     const id = z.string().min(1).max(64).parse(req.params.id);
 

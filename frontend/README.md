@@ -9,10 +9,13 @@ Needs the `professor-api` backend running (default `http://localhost:8080/api`).
 copy `.env.example` to `.env` and set `VITE_API_URL`.
 
 - All network code is in `src/api/professors.js` (endpoints and shapes documented at the top).
-- Login is a full-page redirect to the API's Google flow; sessions live in httpOnly cookies, so the
-  frontend never sees a token. A 401 triggers one silent refresh and retry.
-- Logged out: profile links are Google searches and emails are hidden.
-  Logged in: direct profile links and a "Reveal email" button (rate limited on the server).
+- Login is a full-page redirect to the API's Google flow; tokens live in httpOnly cookies, so the
+  frontend never sees them.
+- Guests browse and search freely (no verification). Profile links are Google searches and emails are hidden.
+- Logged in: right after landing, Cloudflare Turnstile runs invisibly in the background and is traded for a
+  short-lived access token (`src/lib/turnstile.js`, `src/lib/access.js`). It is renewed silently ~90 s before it
+  expires. With the token you get direct profile links and the "Reveal email" button (rate limited on the server).
+  A small box appears only if Cloudflare needs a click. Set `VITE_TURNSTILE_SITE_KEY`.
 
 ## Pages
 - `/` directory, `/about`, `/contact` (React Router).

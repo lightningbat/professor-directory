@@ -7,38 +7,38 @@ declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
-      auth?: { userId: string };
+      /** Set when the request carries a valid access token (login + Turnstile within the last few minutes). */
+      auth?: { userId: string; accessExpiresAt: number };
     }
   }
 }
 
 export function createAuthMiddleware(tokens: TokenService) {
-  async function authenticate(req: Request): Promise<'none' | 'invalid' | 'ok'> {
+  /** 'none' = no cookie, 'invalid' = expired/forged/old-format token, 'ok' = valid (sets req.auth). */
+  async function readAccess(req: Request): Promise<'none' | 'invalid' | 'ok'> {
     const raw: unknown = req.cookies?.[ACCESS_COOKIE];
     if (typeof raw !== 'string' || raw === '') return 'none';
     const verified = await tokens.verifyAccess(raw);
     if (!verified) return 'invalid';
-    req.auth = verified;
+    req.auth = { userId: verified.userId, accessExpiresAt: verified.expiresAt };
     return 'ok';
   }
 
-  const expired = () => new HttpError(401, 'token_expired', 'Access token is missing, expired or invalid');
-
-  /** Works for visitors and logged-in users. A stale token gets 401 so the client can refresh. */
+  /** For public routes that show more to people with access. Never fails: no token just means "guest". */
   const optional: RequestHandler = asyncHandler(async (req, _res, next) => {
-    if ((await authenticate(req)) === 'invalid') throw expired();
+    await readAccess(req);
     next();
   });
 
-  /** Verifies the access cookie; anything but a valid token is a 401. */
+  /** For protected routes. The client renews the token on either 401 code and retries. */
   const required: RequestHandler = asyncHandler(async (req, _res, next) => {
-    const result = await authenticate(req);
-    if (result === 'none') throw new HttpError(401, 'unauthorized', 'Login required');
-    if (result === 'invalid') throw expired();
+    const result = await readAccess(req);
+    if (result === 'none') throw new HttpError(401, 'access_required', 'An access token is required');
+    if (result === 'invalid') throw new HttpError(401, 'access_expired', 'Your access token has expired');
     next();
   });
 
-  return { optional, required };
+  return { optional, required, readAccess };
 }
 
 /**

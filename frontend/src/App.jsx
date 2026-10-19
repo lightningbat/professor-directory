@@ -17,11 +17,12 @@ export default function App() {
 
   const options = useFilterOptions();
   const stats = useStats();
-  const { user, status: authStatus, authError, dismissAuthError } = useAuth();
+  const { user, status: authStatus, authError, dismissAuthError, hasAccess } = useAuth();
   const { rows, total, pageSize, loading, error, retry } = useProfessors(
     filters,
     page,
-    user?.id ?? 'guest',
+    // Profile links differ per viewer: guests and not-yet-verified users get Google searches, verified users direct links.
+    `${user?.id ?? 'guest'}:${hasAccess ? 'access' : 'none'}`,
     authStatus === 'ready',
   );
 

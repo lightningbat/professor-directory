@@ -2,6 +2,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { SignJWT, jwtVerify } from 'jose';
 
 const ISSUER = 'professor-api';
+// "-v2": access tokens are now only issued after a Cloudflare Turnstile check, so tokens from the
+// old design (no Turnstile) are rejected by audience instead of lingering until they expire.
+const ACCESS_AUDIENCE = 'access-v2';
 const OAUTH_TX_TTL_SECONDS = 600;
 
 export interface OAuthTx {
@@ -10,36 +13,47 @@ export interface OAuthTx {
   returnTo: string;
 }
 
+export interface AccessToken {
+  token: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
 /**
- * Access tokens are stateless: a signed JWT that is only checked by signature and expiry,
- * with no database lookup. Refresh tokens are opaque random strings stored (hashed) in the DB.
+ * The access token is stateless: a signed JWT checked only by signature and expiry, no database lookup.
+ * It proves "a logged-in human solved Turnstile within the last few minutes". The login token itself
+ * (stateful) lives in AuthSessionStore.
  */
 export class TokenService {
   private readonly key: Uint8Array;
 
-  constructor(secret: string, private readonly accessTtlSeconds: number) {
+  constructor(secret: string, readonly accessTtlSeconds: number) {
     this.key = new TextEncoder().encode(secret);
   }
 
-  signAccess(userId: string): Promise<string> {
-    return new SignJWT({})
+  async signAccess(userId: string, ttlSeconds = this.accessTtlSeconds): Promise<AccessToken> {
+    const now = Math.floor(Date.now() / 1000);
+    const exp = now + ttlSeconds;
+    const token = await new SignJWT({ role: 'user' })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(userId)
       .setIssuer(ISSUER)
-      .setAudience('access')
-      .setIssuedAt()
-      .setExpirationTime(`${this.accessTtlSeconds}s`)
+      .setAudience(ACCESS_AUDIENCE)
+      .setIssuedAt(now)
+      .setExpirationTime(exp)
       .sign(this.key);
+    return { token, expiresAt: exp * 1000 };
   }
 
-  async verifyAccess(token: string): Promise<{ userId: string } | null> {
+  async verifyAccess(token: string): Promise<{ userId: string; expiresAt: number } | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, {
         issuer: ISSUER,
-        audience: 'access',
+        audience: ACCESS_AUDIENCE,
         algorithms: ['HS256'],
       });
-      return payload.sub ? { userId: payload.sub } : null;
+      if (!payload.sub || payload.role !== 'user' || typeof payload.exp !== 'number') return null;
+      return { userId: payload.sub, expiresAt: payload.exp * 1000 };
     } catch {
       return null;
     }
@@ -74,9 +88,9 @@ export class TokenService {
 
 export const OAUTH_TX_MAX_AGE_MS = OAUTH_TX_TTL_SECONDS * 1000;
 
-export const hashRefreshToken = (raw: string) => createHash('sha256').update(raw).digest('hex');
+export const hashToken = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
-export function newRefreshToken(): { raw: string; hash: string } {
+export function newOpaqueToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString('base64url');
-  return { raw, hash: hashRefreshToken(raw) };
+  return { raw, hash: hashToken(raw) };
 }

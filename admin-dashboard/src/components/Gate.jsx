@@ -11,18 +11,19 @@ function Shell({ children }) {
   );
 }
 
-export function LoadingScreen() {
+export function LoadingScreen({ text = 'Checking your session…' }) {
   return (
     <Shell>
-      <p className="muted" role="status">Checking your session…</p>
+      <p className="muted" role="status">{text}</p>
     </Shell>
   );
 }
 
-export function LoginScreen() {
+export function LoginScreen({ error }) {
   return (
     <Shell>
       <h1>Admin dashboard</h1>
+      {error && <p className="gate-error" role="alert">{error}</p>}
       <p className="muted">Sign in with the Google account that has admin access.</p>
       <a className="btn btn--solid" href={loginUrl()}>Continue with Google</a>
     </Shell>

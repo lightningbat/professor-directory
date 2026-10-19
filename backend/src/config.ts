@@ -21,8 +21,14 @@ const schema = z
     SEED_COUNT: z.coerce.number().int().min(1).max(5000).default(200),
 
     ACCESS_TOKEN_SECRET: z.string().min(32, 'must be at least 32 characters (openssl rand -base64 48)'),
-    ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
-    REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
+    // Short-lived, stateless. 10-15 minutes is the intended range (lower values only for testing).
+    ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(720),
+    // The stateful login token: valid until it has been idle this long, or this old, whichever is first.
+    AUTH_TOKEN_IDLE_DAYS: z.coerce.number().int().min(1).max(90).default(14),
+    AUTH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+
+    // Cloudflare Turnstile secret key. Required in production. Without it (dev only) any token is accepted.
+    TURNSTILE_SECRET_KEY: z.string().optional(),
 
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -30,7 +36,25 @@ const schema = z
 
     COOKIE_SECURE: z.enum(['true', 'false']).optional(),
     COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
-    COOKIE_DOMAIN: z.string().optional(),
+    // Optional. A bare domain such as .mydomain.com (no https://, port or path). Leave it unset for
+    // host-only cookies, which is the safer default.
+    COOKIE_DOMAIN: z
+      .string()
+      .optional()
+      .transform((raw, ctx) => {
+        if (raw === undefined) return undefined;
+        const value = raw.trim().replace(/^["']|["']$/g, '');
+        if (!COOKIE_DOMAIN_RE.test(value)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `"${raw}" is not a valid cookie domain. Use a bare domain such as .mydomain.com ` +
+              '(no https://, port or path), or remove COOKIE_DOMAIN to use host-only cookies.',
+          });
+          return z.NEVER;
+        }
+        return value;
+      }),
 
     TRUST_PROXY: z.string().default('false'),
 
@@ -42,10 +66,21 @@ const schema = z
     ANALYTICS_TIMEZONE: z.string().default('UTC').refine(isValidTimeZone, 'must be a valid IANA timezone'),
     ANALYTICS_RETENTION_DAYS: z.coerce.number().int().min(7).max(730).default(90),
   })
+  .refine((e) => e.NODE_ENV !== 'production' || Boolean(e.TURNSTILE_SECRET_KEY), {
+    path: ['TURNSTILE_SECRET_KEY'],
+    message: 'is required in production (Cloudflare dashboard -> Turnstile -> your widget -> secret key)',
+  })
+  .refine((e) => e.AUTH_TOKEN_IDLE_DAYS <= e.AUTH_TOKEN_TTL_DAYS, {
+    path: ['AUTH_TOKEN_IDLE_DAYS'],
+    message: 'must not be longer than AUTH_TOKEN_TTL_DAYS',
+  })
   .refine((e) => e.COOKIE_SAMESITE !== 'none' || e.COOKIE_SECURE !== 'false', {
     path: ['COOKIE_SAMESITE'],
     message: 'SameSite=None requires secure cookies',
   });
+
+// Same rule the cookie library applies when it writes the Domain attribute.
+const COOKIE_DOMAIN_RE = /^([.]?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)([.][a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
 
 function parseTrustProxy(value: string): boolean | number | string {
   if (value === 'false') return false;
@@ -85,10 +120,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     autoSeed: e.AUTO_SEED ? e.AUTO_SEED === 'true' : e.NODE_ENV !== 'production',
     seedCount: e.SEED_COUNT,
     trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    turnstile: {
+      secret: e.TURNSTILE_SECRET_KEY ?? null,
+      // Cloudflare reports which hostname the widget ran on; only accept our own sites.
+      allowedHostnames: [...new Set(corsOrigins.map((o) => new URL(o).hostname))],
+      action: 'access',
+    },
     auth: {
       accessSecret: e.ACCESS_TOKEN_SECRET,
       accessTtlSeconds: e.ACCESS_TOKEN_TTL_SECONDS,
-      refreshTtlDays: e.REFRESH_TOKEN_TTL_DAYS,
+      authTokenIdleDays: e.AUTH_TOKEN_IDLE_DAYS,
+      authTokenTtlDays: e.AUTH_TOKEN_TTL_DAYS,
       google:
         e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET
           ? { clientId: e.GOOGLE_CLIENT_ID, clientSecret: e.GOOGLE_CLIENT_SECRET, redirectUri: e.GOOGLE_REDIRECT_URI }

@@ -13,6 +13,9 @@ if (config.autoSeed) {
 }
 
 const ctx = createContext(db, config);
+if (ctx.turnstileBypassed) {
+  console.warn('TURNSTILE_SECRET_KEY not set: human verification is DISABLED (any token is accepted). Local development only.');
+}
 if (!ctx.google) {
   console.warn('GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set: login will return 503');
 }

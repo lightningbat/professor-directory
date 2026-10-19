@@ -48,7 +48,7 @@ function waitText(seconds) {
 
 function errorText(err) {
   if (err.status === 429) return `Reveal limit reached. Try again in ${waitText(err.retryAfterSeconds)}.`;
-  if (err.status === 401) return 'Your session expired. Please log in again.';
+  if (err.status === 401) return 'We couldn’t verify you’re human. Please try again in a moment.';
   return 'Couldn’t load the email. Please try again.';
 }
 

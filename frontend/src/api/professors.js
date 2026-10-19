@@ -1,19 +1,22 @@
 /**
- * All network access lives in this file. Requests send cookies (credentials: 'include'), and a
- * 401 triggers one silent refresh-and-retry, so a short-lived access token never logs you out.
+ * All network access lives in this file. Requests send cookies (credentials: 'include').
  *
- *   GET  /professors?q=&college=&department=&designation=&page=&pageSize=
+ *   GET  /professors?q=&college=&department=&designation=&page=&pageSize=   (public)
  *        -> { data: Professor[], total, page, pageSize }
  *        Professor = { id, name, profileUrl, college, department, designation, emailCount }
- *        (logged out: profileUrl is a Google search; emails are never in the list)
- *   POST /professors/:id/email  -> { emails: string[], quota: { hourRemaining, dayRemaining } }
- *   GET  /filters               -> { colleges, departments, designations }
- *   GET  /stats                 -> { professors, universities, departments }
- *   GET  /auth/me               -> { user: { id, email, name, picture } }
+ *        profileUrl is a Google search unless the request carries an access token.
+ *   POST /professors/:id/email  -> { emails, quota }          (needs an access token)
+ *   GET  /filters, GET /stats                                  (public)
+ *   GET  /auth/me               -> { user, access: { expiresAt } | null }   (login cookie)
+ *   POST /auth/access           -> see lib/access.js           (login cookie + Turnstile token)
  *   GET  /auth/google           -> redirects to Google (full page navigation)
- *   POST /auth/refresh, POST /auth/logout
+ *   POST /auth/logout
+ *
+ * "Access token" = logged in AND passed Cloudflare Turnstile in the last few minutes. A 401 with
+ * access_required / access_expired makes this file renew it (lib/access.js) and retry once.
  */
-const BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8080/api').replace(/\/$/, '');
+import { ensureAccess } from '../lib/access.js';
+import { BASE_URL } from './config.js';
 
 export class ApiError extends Error {
   constructor(status, body, retryAfter) {
@@ -25,17 +28,7 @@ export class ApiError extends Error {
   }
 }
 
-// If several requests hit an expired token at once, they share a single refresh call.
-let refreshing = null;
-function refreshSession() {
-  if (!refreshing) {
-    refreshing = fetch(`${BASE_URL}/auth/refresh`, { method: 'POST', credentials: 'include' })
-      .then((res) => res.ok)
-      .catch(() => false)
-      .finally(() => { refreshing = null; });
-  }
-  return refreshing;
-}
+const NEEDS_ACCESS = new Set(['access_required', 'access_expired']);
 
 async function request(path, { params, method = 'GET', body: payload, signal, retry = true } = {}) {
   const url = new URL(`${BASE_URL}${path}`, window.location.origin);
@@ -50,13 +43,12 @@ async function request(path, { params, method = 'GET', body: payload, signal, re
     headers: { Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
     body: payload ? JSON.stringify(payload) : undefined,
   });
+  const body = res.status === 204 ? null : await res.json().catch(() => null);
 
-  if (res.status === 401 && retry) {
-    await refreshSession(); // if it fails the server clears the cookies and the retry is anonymous
+  if (res.status === 401 && retry && NEEDS_ACCESS.has(body?.error?.code)) {
+    await ensureAccess({ force: true }); // Turnstile in the background, then try once more
     return request(path, { params, method, body: payload, signal, retry: false });
   }
-
-  const body = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(res.status, body, res.headers.get('Retry-After'));
   return body;
 }
@@ -65,17 +57,18 @@ export const getProfessors = (params, { signal } = {}) => request('/professors',
 export const getFilterOptions = ({ signal } = {}) => request('/filters', { signal });
 export const getStats = ({ signal } = {}) => request('/stats', { signal });
 
+/** "I'm still here" ping used by the admin dashboard's live visitor count. */
+export const sendHeartbeat = (payload) => request('/analytics/heartbeat', { method: 'POST', body: payload });
+
+/** { user, access } for a logged-in browser, or null when nobody is logged in. */
 export async function getMe({ signal } = {}) {
   try {
-    return (await request('/auth/me', { signal })).user;
+    return await request('/auth/me', { signal });
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;
   }
 }
-
-/** "I'm still here" ping used by the admin dashboard's live visitor count. */
-export const sendHeartbeat = (payload) => request('/analytics/heartbeat', { method: 'POST', body: payload });
 
 export const logout = () => request('/auth/logout', { method: 'POST' });
 

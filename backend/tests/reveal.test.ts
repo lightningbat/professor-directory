@@ -14,7 +14,7 @@ describe('POST /api/professors/:id/email', () => {
   it('needs a login', async () => {
     const { status, body } = await call(app.base, '/api/professors/prof_1/email', { method: 'POST' });
     assert.equal(status, 401);
-    assert.equal(body.error.code, 'unauthorized');
+    assert.equal(body.error.code, 'access_required');
   });
 
   it('returns the emails and the remaining quota', async () => {

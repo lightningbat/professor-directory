@@ -4,6 +4,7 @@ import { sendHeartbeat } from '../api/professors.js';
 import { useAuth } from './useAuth.jsx';
 
 const HEARTBEAT_MS = 25_000;
+let warned = false;
 
 function randomId() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
@@ -30,11 +31,12 @@ function storedId(storage, key) {
  */
 export function useHeartbeat() {
   const { pathname } = useLocation();
-  const { status, user } = useAuth();
-  const viewer = user?.id ?? 'guest';
+  const { status, user, hasAccess, accessSettled } = useAuth();
+  // "Signed in" on the server means a valid access token, so classify only once Turnstile has settled.
+  const viewer = `${user?.id ?? 'guest'}:${hasAccess ? 'access' : 'none'}`;
 
   useEffect(() => {
-    if (status !== 'ready') return undefined; // wait until we know if they're signed in
+    if (status !== 'ready' || !accessSettled) return undefined; // wait until we know who they are
 
     const visitorId = storedId(localStorage, 'vid');
     const sessionId = storedId(sessionStorage, 'sid');
@@ -42,7 +44,15 @@ export function useHeartbeat() {
 
     const beat = () => {
       if (document.visibilityState !== 'visible') return;
-      sendHeartbeat({ visitorId, sessionId, path: pathname }).catch(() => {}); // never bother the user
+      // Never bother the user, but leave one hint in the console for whoever is debugging.
+      sendHeartbeat({ visitorId, sessionId, path: pathname }).catch((err) => {
+        if (warned) return;
+        warned = true;
+        console.debug(
+          '[heartbeat] request failed. An ad blocker, a wrong VITE_API_URL or a proxy not forwarding /api/ can cause this.',
+          err,
+        );
+      });
     };
     const start = () => {
       clearInterval(timer);
@@ -57,5 +67,5 @@ export function useHeartbeat() {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [pathname, status, viewer]);
+  }, [pathname, status, accessSettled, viewer]);
 }

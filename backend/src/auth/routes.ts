@@ -1,14 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { Router, type Response } from 'express';
+import { z } from 'zod';
+import type { FixedWindowThrottle } from '../analytics/throttle.js';
 import type { Config } from '../config.js';
+import { ipKey } from '../reveal/ip.js';
+import type { TurnstileVerifier } from '../turnstile/verify.js';
 import type { GoogleAuth } from './google.js';
 import {
-  ACCESS_COOKIE, OAUTH_TX_COOKIE, REFRESH_COOKIE,
-  clearAuthCookies, clearOAuthTxCookie, setAuthCookies, setOAuthTxCookie,
+  AUTH_COOKIE, OAUTH_TX_COOKIE,
+  clearAccessCookie, clearAuthCookies, clearOAuthTxCookie, setAccessCookie, setAuthTokenCookie, setOAuthTxCookie,
 } from './cookies.js';
 import { asyncHandler, HttpError } from './http.js';
 import { trustedOrigin, type createAuthMiddleware } from './middleware.js';
-import type { SessionStore } from './sessions.js';
+import type { AuthSessionStore } from './sessions.js';
 import { OAUTH_TX_MAX_AGE_MS, type TokenService } from './tokens.js';
 import type { UserStore } from './users.js';
 
@@ -16,12 +20,16 @@ interface Deps {
   config: Config;
   google: GoogleAuth | null;
   users: UserStore;
-  sessions: SessionStore;
+  sessions: AuthSessionStore;
   tokens: TokenService;
   auth: ReturnType<typeof createAuthMiddleware>;
+  turnstile: TurnstileVerifier;
+  accessThrottle: FixedWindowThrottle;
 }
 
-export function authRoutes({ config, google, users, sessions, tokens, auth }: Deps): Router {
+const accessBody = z.object({ turnstileToken: z.string().min(1).max(2048) });
+
+export function authRoutes({ config, google, users, sessions, tokens, auth, turnstile, accessThrottle }: Deps): Router {
   const router = Router();
   const csrf = trustedOrigin(config.corsOrigins);
 
@@ -57,6 +65,15 @@ export function authRoutes({ config, google, users, sessions, tokens, auth }: De
     const url = new URL(path, `${config.frontendUrl}/`);
     if (error) url.searchParams.set('auth_error', error);
     res.redirect(url.toString());
+  };
+
+  /** The stateful login token from its cookie, or null (and the cookies are cleared if it was bad). */
+  const currentSession = (req: { cookies?: Record<string, unknown> }, res: Response) => {
+    const raw = req.cookies?.[AUTH_COOKIE];
+    if (typeof raw !== 'string' || raw === '') return null;
+    const session = sessions.validate(raw);
+    if (!session) clearAuthCookies(res, config);
+    return session && { ...session, raw };
   };
 
   // 1. Browser navigates here; we bounce it to Google.
@@ -111,47 +128,78 @@ export function authRoutes({ config, google, users, sessions, tokens, auth }: De
     }
     if (!profile.emailVerified) return backToSite(res, tx.returnTo, 'email_unverified');
 
+    // Login only hands out the stateful login token. The access token needs a Turnstile solve,
+    // which the site runs in the background right after landing.
     const user = users.upsertGoogleUser(profile);
-    const refresh = sessions.create(user.id, { ip: req.ip, userAgent: req.get('user-agent') });
-    setAuthCookies(res, config, await tokens.signAccess(user.id), refresh);
+    const session = sessions.create(user.id, { ip: req.ip, userAgent: req.get('user-agent') });
+    clearAccessCookie(res, config); // never let a previous person's access token survive a new login
+    setAuthTokenCookie(res, config, session);
     backToSite(res, tx.returnTo);
   }));
 
-  // Swap the refresh cookie for a fresh access + refresh pair (rotation).
-  router.post('/auth/refresh', csrf, asyncHandler(async (req, res) => {
-    const raw: unknown = req.cookies?.[REFRESH_COOKIE];
-    const result =
-      typeof raw === 'string' && raw
-        ? sessions.rotate(raw, { ip: req.ip, userAgent: req.get('user-agent') })
-        : ({ ok: false, reason: 'invalid' } as const);
+  // Trade (login token cookie + a fresh Turnstile token) for a short-lived access token.
+  // The browser attaches the httpOnly login cookie by itself; JavaScript only supplies the Turnstile token.
+  router.post('/auth/access', csrf, asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
 
-    if (!result.ok) {
-      clearAuthCookies(res, config);
-      throw new HttpError(401, result.reason === 'reuse' ? 'session_revoked' : 'unauthorized', 'Please log in again');
+    if (!accessThrottle.allow(ipKey(req.ip))) {
+      throw new HttpError(429, 'rate_limited', 'Too many verification attempts. Please wait a moment.', {
+        retryAfterSeconds: 60,
+      });
+    }
+    const { turnstileToken } = accessBody.parse(req.body);
+
+    // Check the login first: logged-out visitors must not cost a Cloudflare call.
+    const session = currentSession(req, res);
+    if (!session) throw new HttpError(401, 'unauthorized', 'Please log in');
+
+    const check = await turnstile.verify(turnstileToken, req.ip);
+    if (!check.ok) {
+      if (check.reason === 'unavailable') {
+        console.error('Turnstile verification unavailable:', check.codes);
+        throw new HttpError(503, 'turnstile_unavailable', 'Human verification is temporarily unavailable');
+      }
+      throw new HttpError(400, 'turnstile_failed', 'Human verification failed', { codes: check.codes });
     }
 
-    setAuthCookies(res, config, await tokens.signAccess(result.userId), result);
-    res.json({ ok: true });
+    const user = users.getById(session.userId);
+    if (!user) {
+      sessions.revoke(session.raw);
+      clearAuthCookies(res, config);
+      throw new HttpError(401, 'unauthorized', 'Account no longer exists');
+    }
+
+    const access = await tokens.signAccess(user.id);
+    setAccessCookie(res, config, access.token, config.auth.accessTtlSeconds);
+    res.json({ user, expiresAt: access.expiresAt });
   }));
 
   router.post('/auth/logout', csrf, (req, res) => {
-    const raw: unknown = req.cookies?.[REFRESH_COOKIE];
+    const raw: unknown = req.cookies?.[AUTH_COOKIE];
     if (typeof raw === 'string' && raw) sessions.revoke(raw);
     clearAuthCookies(res, config);
     res.status(204).end();
   });
 
-  router.get('/auth/me', auth.required, (req, res) => {
-    const user = users.getById(req.auth!.userId);
+  // Who is logged in (from the stateful login token), and whether they still hold a valid access token,
+  // so a page reload within the access lifetime doesn't need another Turnstile solve.
+  router.get('/auth/me', asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+
+    const session = currentSession(req, res);
+    if (!session) throw new HttpError(401, 'unauthorized', 'Not logged in');
+
+    const user = users.getById(session.userId);
     if (!user) {
+      sessions.revoke(session.raw);
       clearAuthCookies(res, config);
       throw new HttpError(401, 'unauthorized', 'Account no longer exists');
     }
-    res.set('Cache-Control', 'private, no-store');
-    res.json({ user });
-  });
+
+    const state = await auth.readAccess(req);
+    const access = state === 'ok' && req.auth?.userId === user.id ? { expiresAt: req.auth.accessExpiresAt } : null;
+    res.json({ user, access });
+  }));
 
   return router;
 }
-
-export { ACCESS_COOKIE };

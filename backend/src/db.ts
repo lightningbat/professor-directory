@@ -54,6 +54,21 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_refresh_family ON refresh_tokens(family_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_user   ON refresh_tokens(user_id);
 
+-- The login ("auth") token: opaque, stateful, one row per login. Only a SHA-256 hash is stored.
+-- It can be revoked (logout) and expires after being idle or after an absolute lifetime.
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  revoked_at   INTEGER,
+  ip           TEXT,
+  user_agent   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+
 -- One row per successful email reveal; the rate limiter counts rows in a sliding window.
 CREATE TABLE IF NOT EXISTS email_reveals (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

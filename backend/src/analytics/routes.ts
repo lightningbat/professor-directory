@@ -16,8 +16,8 @@ export function analyticsRoutes(ctx: AppContext): Router {
   const router = Router();
 
   // POST /api/analytics/heartbeat  { visitorId, sessionId, path }
-  // The site calls this every ~25 s while a tab is visible. Whether the person is signed in comes
-  // from the login cookie, never from the request body.
+  // The site calls this every ~25 s while a tab is visible. "Signed in" means the request carries a valid
+  // access token (login + Turnstile), never anything the browser claims in the body.
   router.post('/analytics/heartbeat', auth.optional, (req, res) => {
     if (!heartbeatThrottle.allow(ipKey(req.ip))) {
       throw new HttpError(429, 'rate_limited', 'Too many heartbeats');
